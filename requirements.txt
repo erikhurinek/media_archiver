@@ -1,6 +1,1 @@
-altgraph==0.17.5
-packaging==26.3
-pyinstaller==6.22.1
-pyinstaller-hooks-contrib==2026.6
-setuptools==84.0.0
-tqdm==4.70.0
+tqdm
