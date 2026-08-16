@@ -1,16 +1,13 @@
 # Video and Image Archive Tool
 
-This command-line tool is designed to re-encode videos and images, whilst mirroring the directory structure.
-Videos will have their video streams encoded to H265 (except AV1), audio streams to OPUS, and be remuxed to Matroska (MKV) container.
-All images except AVIF will be re-encoded to JPEG-XL.
-Other files will be skipped and logged.
+A command-line tool for recursively compressing (re-encoding) videos and images.
 
 ## Dependencies
 The following tools must be installed and available via the system's PATH.
- - [FFmpeg](https://www.ffmpeg.org/)
- - [ffprobe](https://ffmpeg.org/ffprobe.html), should come installed with ffmpeg.
- - [ExifTool](https://exiftool.org/)
- - [libjxl](https://github.com/libjxl/libjxl) for `cjxl`.
+ - [FFmpeg](https://www.ffmpeg.org/), for endcoding and decoding.
+ - [ffprobe](https://ffmpeg.org/ffprobe.html), for extracting video metadata. It should come with FFmpeg.
+ - [ExifTool](https://exiftool.org/), for extracting metadata from images.
+ - [libjxl](https://github.com/libjxl/libjxl), for JPEG-XL. The `cjxl` command should be available.
 
 ## Example Usage
 Consider the example directory structure:
@@ -46,7 +43,11 @@ media_archiver
 
 ## Building
 It is possible to compile the application to an executable with PyInstaller.
-See [./build.md](build.md) for instructions.
+See [build.md]([./build.md) for instructions.
+
+## Releases
+Windows and Linux executables should be available under [releases](./releases).
+Only Linux has been tested.
 
 ## Detailed Documentation
 
@@ -76,13 +77,14 @@ Similarly, all audio streams besides OPUS will be re-encoded.
 The video file will always be remuxed to Matroska.
 
 All images besides JPEG-XL and AVIF will be re-formatted to JPEG-XL, and their extension changed.
-JPEG-XL images will be copied. AVIF images will be copied and retain their `avif`. extension.
+JPEG-XL images will be copied. AVIF images will be copied and will retain their `avif`. extension.
 
 ### Path Mirroring
 When archiving files, their path relative to `input_dir` is preserved and recreated in `output_dir`. 
+The `output_dir` will be created if it does not exist.
 
 ### File Renaming
-Note that for all files except AVIF, the original extension will be replaced with `.mkv` or `.jxl`.  
+Note that for all files except AVIF, the original extension will be replaced with `mkv` or `jxl`.  
 The `--idname` flag can be used to replace the original filename with a zero-indexed counter.
 The format of the counter can switched from decimal to hexadecimal using `--idformat`.  
 The `--idstart` flag will imply `--idname`, but begin from a specified value.
@@ -95,11 +97,11 @@ The number of workers is limited to the number of cores on the system.
 
 ### Hardware Acceleration
 When available, hardware acceleration should noticeably speed up processing, and can be controlled with `--accel`.
-Remember to check `error.log` for support errors.
+Remember to check `error.log` for support issues.
 
 ### Logs
 The script will also produce three log files in the current working directory. 
-These will not be cleared on subsequent re-runs of the script.
+These will be appended to on subsequent re-runs of the script.
  1. `compress.log` stores a verbose log of any errors and external tool outputs.
  2. `success.log` tracks which files were compressed or copied.
  3. `error.log` tracks which files were not compress or copied.
