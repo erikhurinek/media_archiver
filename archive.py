@@ -237,42 +237,98 @@ def probe_av_codecs(path: Path, compress_log: logging.Logger) -> tuple[str | Non
     return v_codec, a_codec, True
 
 
+# Detect black frames
+def probe_black_frames(path: Path, compress_log: logging.Logger,
+                       min_duration: float = 0.1,
+                       pixel_threshold: float = 0.1) -> tuple[float | None, float | None]:
+    cmd = [
+        "ffprobe", "-v", "quiet",
+        "-show_entries", "frame_tags=lavfi.black_start,lavfi.black_end",
+        "-of", "json",
+        "-f", "lavfi",
+        f"amovie={path}:s=v,blackdetect=d={min_duration}:pix_th={pixel_threshold}",
+    ]
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+        compress_log.debug(f"[blackdetect] {path}\n{result.stdout}\n{result.stderr}")
+        data = json.loads(result.stdout)
+    except (subprocess.TimeoutExpired, json.JSONDecodeError, OSError) as exc:
+        compress_log.debug(f"[blackdetect error] {path}: {exc}")
+        return None, None
+
+    # black_start and black_end arrive on separate frames — collect independently
+    starts = []
+    ends = []
+    for frame in data.get("frames", []):
+        tags = frame.get("tags", {})
+        if "lavfi.black_start" in tags:
+            starts.append(float(tags["lavfi.black_start"]))
+        if "lavfi.black_end" in tags:
+            ends.append(float(tags["lavfi.black_end"]))
+
+    if not starts:
+        compress_log.debug(f"[blackdetect] {path}: no black segments detected")
+        return None, None
+
+    # Pair starts and ends into segments; guard against an unpaired trailing start
+    segments = list(zip(starts, ends)) if ends else [(starts[0], None)]
+
+    content_start = segments[0][1] if segments[0][0] < 0.5 and segments[0][1] is not None else None
+    content_end   = segments[-1][0] if len(segments) > 1 or content_start is None else None
+
+    compress_log.debug(f"[blackdetect] {path}: content_start={content_start}, content_end={content_end}")
+    return content_start, content_end
+
+
 # Image and video encoding
 def encode_video(src: Path, dst: Path, video_ok: bool, audio_ok: bool,
-                  has_audio: bool, hw: HWAccel,
-                  compress_log: logging.Logger) -> bool:
+                 has_audio: bool, hw: HWAccel,
+                 trim_start: float | None, trim_end: float | None,
+                 compress_log: logging.Logger) -> bool:
     """
     Re-encode only the required streams.
     hw selects software or hardware encoder + decode flags.
     """
     dst.parent.mkdir(parents=True, exist_ok=True)
 
-    v_flags = ["-c:v", "copy"] if video_ok else \
-              ["-c:v", hw.encoder, *hw.quality_flags]
+    needs_trim = trim_start is not None or trim_end is not None
 
-    if not has_audio:
-        a_flags = []
-    elif audio_ok:
-        a_flags = ["-c:a", "copy"]
+    if needs_trim:
+        v_flags = ["-c:v", hw.encoder, *hw.quality_flags]
+        a_flags = ["-c:a", "libopus", "-b:a", "128k"] if has_audio else []
     else:
-        a_flags = ["-c:a", "libopus", "-b:a", "128k"]
+        v_flags = ["-c:v", "copy"] if video_ok else \
+                  ["-c:v", hw.encoder, *hw.quality_flags]
+        if not has_audio:
+            a_flags = []
+        elif audio_ok:
+            a_flags = ["-c:a", "copy"]
+        else:
+            a_flags = ["-c:a", "libopus", "-b:a", "128k"]
+
+    trim_flags = []
+    if trim_start is not None:
+        trim_flags += ["-ss", str(trim_start)]
+    if trim_end is not None:
+        trim_flags += ["-to", str(trim_end)]
 
     cmd = [
         "ffmpeg", "-y",
-        *hw.decode_flags,  # hardware decode flags
-        "-i", str(src),  # input file
-        "-map", "0", "-dn",  # -dn: drop data streams that are unsupported by Matroska
-        "-map_metadata", "0", "-map_chapters", "0",  # explicit metadata preservation
-        *v_flags, *a_flags,  # codec flags
-        "-c:s", "copy",  # copy subtitle streams if present
+        *hw.decode_flags,
+        "-i", str(src),
+        *trim_flags,
+        "-map", "0", "-dn",
+        "-map_metadata", "0", "-map_chapters", "0",
+        *v_flags, *a_flags,
+        "-c:s", "copy",
         str(dst),
     ]
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True, check=True, timeout=7200)
-        compress_log.debug(f"[encode] {src} -> {dst}\n{result.stdout}\n{result.stderr}")
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=7200)
+        compress_log.debug(f"[encode] {src} [{trim_start} - {trim_end}] -> {dst}\n{result.stdout}\n{result.stderr}")
         return result.returncode == 0
     except (subprocess.TimeoutExpired, OSError) as exc:
-        compress_log.debug(f"[encode error] {src}: {exc}")
+        compress_log.debug(f"[encode error] {src} [{trim_start} - {trim_end}]: {exc}")
         return False
 
 
@@ -338,6 +394,7 @@ def process_file(
     src: Path, input_root: Path, output_root: Path,
     counter: AtomicCounter | None, id_format: str,
     hw: HWAccel,
+    trim_black: bool,
     success_log: logging.Logger, error_log: logging.Logger,
     compress_log: logging.Logger, stats: Stats,
 ) -> None:
@@ -375,10 +432,13 @@ def process_file(
         has_audio = a_codec is not None
         audio_ok = (not has_audio) or (a_codec in PASSTHROUGH_AUDIO_CODECS)
 
+        trim_start, trim_end = probe_black_frames(src, compress_log) if trim_black else (None, None)
+        needs_trim = trim_start is not None or trim_end is not None
+
         dst.parent.mkdir(parents=True, exist_ok=True)
-        if video_ok and audio_ok:
-            # Remux to MKV without re-eoncoding.
-            ok = encode_video(src, dst, True, True, has_audio, hw, compress_log)
+        if video_ok and audio_ok and not needs_trim:
+            ok = encode_video(src, dst, True, True, has_audio, hw,
+                              None, None, compress_log)
             if ok:
                 success_log.info(f"{src} -> {dst} [COPY] [VIDEO]")
                 stats.increment("video", "copy")
@@ -386,9 +446,11 @@ def process_file(
                 error_log.warning(f"[remux failed] {src}")
                 stats.increment("video", "error")
         else:
-            ok = encode_video(src, dst, video_ok, audio_ok, has_audio, hw, compress_log)
+            ok = encode_video(src, dst, video_ok, audio_ok, has_audio, hw,
+                              trim_start, trim_end, compress_log)
             if ok:
-                success_log.info(f"{src} -> {dst} [COMPRESSED] [VIDEO]")
+                action = "TRIMMED" if needs_trim and video_ok and audio_ok else "COMPRESSED"
+                success_log.info(f"{src} -> {dst} [{action}] [VIDEO]")
                 stats.increment("video", "compressed")
             else:
                 error_log.warning(f"[encode failed] {src}")
@@ -446,6 +508,8 @@ def parse_args() -> argparse.Namespace:
                     help="Parallel worker threads (default 2; CPU-bound)")
     p.add_argument("--accel", choices=["none", "nvidia", "amd", "intel"], default="none",
                     help="Hardware video encoder/decoder to use (default: none)")
+    p.add_argument("--trim-black", action="store_true",
+                    help="Trim black frames from start/end of videos (default: off)")
     return p.parse_args()
 
 
@@ -494,6 +558,8 @@ def main():
     hw = HWACCEL_MAP[args.accel]
     print(f"[accel] Video encoder: {hw.encoder} ({'hardware' if args.accel != 'none' else 'software'})")
 
+    trim_black = args.trim_black
+
     # Progress bars
     overall_bar = tqdm(total=len(files), desc="Overall", position=0, unit="file")
     slot_queue: queue.Queue[int] = queue.Queue()
@@ -513,7 +579,7 @@ def main():
         try:
             process_file(
                 src, input_root, output_root, counter, args.idformat,
-                hw, success_log, error_log, compress_log, stats,
+                hw, trim_black, success_log, error_log, compress_log, stats,
             )
         finally:
             bar.set_description_str(f"[Worker {slot + 1}] idle")
@@ -525,6 +591,7 @@ def main():
             exc = fut.exception()
             if exc:
                 error_log.warning(f"[unexpected error] {futures[fut]}: {exc}")
+                compress_log.debug(f"[unexpected error traceback] {futures[fut]}", exc_info=exc)
                 stats.increment("other", "skipped")
             overall_bar.update(1)
 

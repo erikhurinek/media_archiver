@@ -68,16 +68,19 @@ options:
   --workers WORKERS     Parallel worker threads (default 2; CPU-bound)
   --accel {none,nvidia,amd,intel}
                         Hardware video encoder/decoder to use (default: none)
+  --trim-black
+                        Trim black frames from start/end of videos (default: off)
 ```
 
 ### Passthrough Codecs
 For video files, a video stream with the H265 or AV1 codec will be copied.
+The execption to this is if `--trim-black` flag is provided and black frames are detected.
 Otherwise, it will be re-encoded to H265.
 Similarly, all audio streams besides OPUS will be re-encoded.  
 The video file will always be remuxed to Matroska.
 
 All images besides JPEG-XL and AVIF will be re-formatted to JPEG-XL, and their extension changed.
-JPEG-XL images will be copied. AVIF images will be copied and will retain their `avif`. extension.
+JPEG-XL images will be copied. AVIF images will be copied and will retain their `avif` extension.
 
 ### Path Mirroring
 When archiving files, their path relative to `input_dir` is preserved and recreated in `output_dir`. 
@@ -98,6 +101,9 @@ The number of workers is limited to the number of cores on the system.
 ### Hardware Acceleration
 When available, hardware acceleration should noticeably speed up processing, and can be controlled with `--accel`.
 Remember to check `error.log` for support issues.
+
+## Trimming Black Frames
+The application will detect and remove black frames from the start and end of the video if the `--trim-black` flag is provided.
 
 ### Logs
 The script will also produce three log files in the current working directory. 
