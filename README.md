@@ -5,7 +5,7 @@ A command-line tool for recursively compressing (re-encoding) videos and images.
 ## Dependencies
 The following tools must be installed and available via the system's PATH.
  - [FFmpeg](https://www.ffmpeg.org/), for endcoding and decoding.
- - [ffprobe](https://ffmpeg.org/ffprobe.html), for extracting video metadata. It should come with FFmpeg.
+ - [ffprobe](https://ffmpeg.org/ffprobe.html), for extracting video metadata, and should be available with FFmpeg.
  - [ExifTool](https://exiftool.org/), for extracting metadata from images.
  - [libjxl](https://github.com/libjxl/libjxl), for JPEG-XL. The `cjxl` command should be available.
 
@@ -21,11 +21,11 @@ media_archiver
 │   └── originally_av1_video.mp4   # An MP4 encoded with AV1
 └── archive.py                     # This script
 ```
-With the following command [inside a virtual environment](https://docs.python.org/3/library/venv.html),
+With the following command inside a [virtual environment](https://docs.python.org/3/library/venv.html),
 ```bash
-python archive.py input_dir output_dir
+uv run archive.py input_dir output_dir
 ```
-The following will be produced,
+The result will look like this:
 ```
 media_archiver
 ├── input_dir/                     # Original input directory
@@ -40,10 +40,6 @@ media_archiver
 ├── success.log                    # Log of successfully archived files
 └── error.log                      # Log of unsuccessful files
 ```
-
-## Building
-It is possible to compile the application to an executable with PyInstaller.
-See [build.md]([./build.md) for instructions.
 
 ## Releases
 Windows and Linux executables should be available under [releases](./releases).
@@ -68,19 +64,21 @@ options:
   --workers WORKERS     Parallel worker threads (default 2; CPU-bound)
   --accel {none,nvidia,amd,intel}
                         Hardware video encoder/decoder to use (default: none)
-  --trim-black
-                        Trim black frames from start/end of videos (default: off)
+  --trimblack           Trim black frames from start/end of videos (default: off)
+  --idout               Output the final ID to a file 'resume.txt'. Requires --idname
+  --idresume            Resume ID from the value in 'resume.txt' in the current directory. Implies --idname
 ```
 
 ### Passthrough Codecs
 For video files, a video stream with the H265 or AV1 codec will be copied.
-The execption to this is if `--trim-black` flag is provided and black frames are detected.
+The execption to this is if the `--trim-black` flag is provided and black frames are detected.
 Otherwise, it will be re-encoded to H265.
 Similarly, all audio streams besides OPUS will be re-encoded.  
 The video file will always be remuxed to Matroska.
 
-All images besides JPEG-XL and AVIF will be re-formatted to JPEG-XL, and their extension changed.
-JPEG-XL images will be copied. AVIF images will be copied and will retain their `avif` extension.
+All images besides JPEG-XL and AVIF will be re-formatted to JPEG-XL and their extension changed.
+JPEG-XL images will be copied.
+AVIF images will be copied and will retain their `avif` extension.
 
 ### Path Mirroring
 When archiving files, their path relative to `input_dir` is preserved and recreated in `output_dir`. 
@@ -92,6 +90,8 @@ The `--idname` flag can be used to replace the original filename with a zero-ind
 The format of the counter can switched from decimal to hexadecimal using `--idformat`.  
 The `--idstart` flag will imply `--idname`, but begin from a specified value.
 The format of the value read by `--idstart` is the same as that specified by `--idformat`.
+The `--idout` flag will output the current format and successor to the final id to `resume.txt`.
+This can be used to resume ids with `--idresume`, which will also imply `--idname` and specify `--idformat`.
 
 ### Workers
 Multiple workers can process files in parallel using the `--workers` flag.
@@ -103,7 +103,8 @@ When available, hardware acceleration should noticeably speed up processing, and
 Remember to check `error.log` for support issues.
 
 ## Trimming Black Frames
-The application will detect and remove black frames from the start and end of the video if the `--trim-black` flag is provided.
+The application will detect and remove black frames from the start and end of the video when the `--trimblack` flag is provided.
+If an AV1 video is detected to have black frames, it will be re-encoded to H265, which can increase the file size.
 
 ### Logs
 The script will also produce three log files in the current working directory. 

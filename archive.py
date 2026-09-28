@@ -76,6 +76,10 @@ PASSTHROUGH_AUDIO_CODECS = {"opus"}
 PASSTHROUGH_IMAGE_FORMATS = {"jxl", "avif"}
 
 
+# ID output file
+RESUME_DATA_FILE = "resume.txt"
+
+
 # Binary presence check
 def check_required_binaries() -> None:
     """Abort with a message if any required tool is missing."""
@@ -94,15 +98,28 @@ class AtomicCounter:
     def __init__(self, start: int = 0):
         self._counter = itertools.count(start)
         self._lock = threading.Lock()
+        self._current = start - 1
 
     def next(self) -> int:
         with self._lock:
-            return next(self._counter)
+            self._current = next(self._counter)
+            return self._current
+
+    @property
+    def value(self) -> int:
+        with self._lock:
+            return self._current
 
 
 def format_id(n: int, id_format: str) -> str:
     """8-digit zero-padded ID. id_format is either 'dec' or 'hex'."""
     return f"{n:08x}" if id_format == "hex" else f"{n:08d}"
+
+
+def parse_id(s: str, id_format: str) -> int:
+    """Parse an ID string in the given format ('dec' or 'hex') into an integer."""
+    base = 16 if id_format == "hex" else 10
+    return int(s, base)
 
 
 # Thread-safe stats
@@ -496,26 +513,60 @@ def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
         description="Archive videos (H265/AV1+Opus/MKV) and images (JPEG-XL)."
     )
-    p.add_argument("input_dir",  type=Path, help="Source directory root")
+    p.add_argument("input_dir", type=Path, help="Source directory root")
     p.add_argument("output_dir", type=Path, help="Destination directory root, auto-created")
     p.add_argument("--idname", action="store_true",
                     help="Replace filenames with sequential IDs")
     p.add_argument("--idstart", type=str, default=None,
                     help="Starting ID (format per --idformat); implies --idname")
-    p.add_argument("--idformat", choices=["dec", "hex"], default="dec",
+    p.add_argument("--idformat", choices=["dec", "hex"],
                     help="Format of --idstart and generated IDs (default: dec)")
     p.add_argument("--workers", type=int, default=2,
                     help="Parallel worker threads (default 2; CPU-bound)")
     p.add_argument("--accel", choices=["none", "nvidia", "amd", "intel"], default="none",
                     help="Hardware video encoder/decoder to use (default: none)")
-    p.add_argument("--trim-black", action="store_true",
+    p.add_argument("--trimblack", action="store_true",
                     help="Trim black frames from start/end of videos (default: off)")
+    p.add_argument("--idout", action="store_true",
+                    help=f"Outputs the next id and current format to '{RESUME_DATA_FILE}' in the current directory. Implies --idname.")
+    p.add_argument("--idresume", action="store_true",
+                    help=f"Resume ID from '{RESUME_DATA_FILE}' in the current directory. Implies --idname.")
     return p.parse_args()
 
 
-def resolve_id_start(args: argparse.Namespace) -> int:
-    """--idstart implies --idname; parse & report interpretation."""
-    if args.idstart is not None:
+def read_saved_format_and_id(file: Path) -> tuple[str, int]:
+    with open(file, "r", encoding="utf-8") as f:
+        format, start_val = f.read().strip().split()
+    format = format.lower()
+    print("format", format)
+
+    if format not in ("dec", "hex"):
+        raise ValueError(f"Invalid format '{format}' in '{file}'; expected 'dec' or 'hex'.")
+
+    return format, parse_id(start_val, format)
+
+
+def write_saved_format_and_id(file: Path, format: str, id_value: int) -> None:
+    with open(file, "w", encoding="utf-8") as f:
+        f.write(f"{format.lower()} {format_id(id_value, format)}")
+
+
+def resolve_id_and_format(args: argparse.Namespace) -> int:
+    if args.idresume and args.idstart:
+        sys.exit("error: --idresume and --idstart cannot be used together; use --idresume alone to resume from id.txt.")
+    if args.idresume and args.idformat:
+        sys.exit("error: --idresume and --idformat cannot be used together; use --idresume alone to resume from id.txt.")
+
+    if args.idresume:
+        args.idname = True
+        id_file_path = Path.cwd() / RESUME_DATA_FILE
+        if not id_file_path.exists():
+            sys.exit(f"error: --idresume specified but '{RESUME_DATA_FILE}' does not exist in the current directory.")
+        try:
+            args.idformat, start_val = read_saved_format_and_id(id_file_path)
+        except (OSError, ValueError) as exc:
+            sys.exit(f"error: failed to read starting ID from '{RESUME_DATA_FILE}': {exc}")
+    elif args.idstart is not None:
         args.idname = True
         base = 16 if args.idformat == "hex" else 10
         try:
@@ -524,6 +575,8 @@ def resolve_id_start(args: argparse.Namespace) -> int:
             sys.exit(f"error: --idstart '{args.idstart}' is not valid {args.idformat}")
     else:
         start_val = 0
+
+    args.idformat = args.idformat or "dec"
 
     if args.idname:
         print(
@@ -537,7 +590,7 @@ def resolve_id_start(args: argparse.Namespace) -> int:
 def main():
     check_required_binaries()
     args = parse_args()
-    start_val = resolve_id_start(args)
+    start_val = resolve_id_and_format(args)
 
     input_root  = args.input_dir.resolve()
     output_root = args.output_dir.resolve()
@@ -552,13 +605,16 @@ def main():
     if not files:
         print("No files found — nothing to do.")
         return
+    
+    if (args.idout and not args.idname):
+        sys.exit("error: --idout requires --idname to be specified or implied")
 
     counter = AtomicCounter(start_val) if args.idname else None
     stats = Stats()
     hw = HWACCEL_MAP[args.accel]
     print(f"[accel] Video encoder: {hw.encoder} ({'hardware' if args.accel != 'none' else 'software'})")
 
-    trim_black = args.trim_black
+    trim_black = args.trimblack
 
     # Progress bars
     overall_bar = tqdm(total=len(files), desc="Overall", position=0, unit="file")
@@ -600,10 +656,22 @@ def main():
     overall_bar.close()
 
     print("\nFinished.")
+
+    if counter is not None:
+        if args.idout:
+            id_out_path = Path.cwd() / RESUME_DATA_FILE
+            try:
+                write_saved_format_and_id(id_out_path, args.idformat, counter.next())
+                print(f"[id] Final ID {counter.value} written to {id_out_path}")
+            except OSError as exc:
+                error_log.warning(f"[id] Failed to write final id {id_out_path}: {exc}")
+        else:
+            print(f"[id] Final ID used: {counter.value}")
+
     for line in stats.summary_lines():
         print(line)
 
 
 if __name__ == "__main__":
-    multiprocessing.freeze_support()  # required for PyInstaller executables
+    multiprocessing.freeze_support()
     main()

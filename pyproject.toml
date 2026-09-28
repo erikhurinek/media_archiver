@@ -1,0 +1,20 @@
+[project]
+name = "media-archiver"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+authors = [
+    { name = "erikhurinek", email = "erik.hurinek@gmx.co.uk" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "pyinstaller>=6.22.3",
+    "tqdm>=4.70.1",
+]
+
+[project.scripts]
+media-archiver = "media_archiver:main"
+
+[build-system]
+requires = ["uv_build>=0.12.5,<0.13.0"]
+build-backend = "uv_build"

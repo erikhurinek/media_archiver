@@ -1,6 +1,10 @@
 # Test data
 test_data/
 
+# Application logs and output files
+*.log
+resume.txt
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]
